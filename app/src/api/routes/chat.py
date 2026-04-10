@@ -1,52 +1,58 @@
 import time
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
+from app.src.agent.state import IntentState
 from app.src.core.config import settings
-from app.src.llm.ollama_client import OllamaClient
 from app.src.schemas.chat import ChatRequest
 from app.src.services.agent_service import AgentService
 
 router = APIRouter()
 
-_client = OllamaClient(host=settings.ollama_host)
-_service = AgentService(_client, default_model=settings.default_model)
+_service = AgentService(default_model=settings.default_model)
 
 
-def _resp_get(resp, key: str, default=None):
-    if isinstance(resp, dict):
-        return resp.get(key, default)
-    return getattr(resp, key, default)
-
-
-def _msg_get(message, key: str, default=None):
-    if message is None:
-        return default
-    if isinstance(message, dict):
-        return message.get(key, default)
-    return getattr(message, key, default)
+def _get_response(state: IntentState) -> str:
+    """Read the final user-facing message written by the terminal node."""
+    return state.get("response") or "An unexpected error occurred."
 
 
 @router.post("/chat")
 def chat(req: ChatRequest):
-    result = _service.run(req.messages, req.model)
-    result_message = _resp_get(result, "message")
-    created = int(time.time())
+    """
+    Entry point for the LangGraph agent.
+
+    Runs the full agent graph and returns an OpenAI-compatible response.
+    The terminal node (unsupported_response, query_pipeline, anomaly_pipeline)
+    is responsible for setting state["response"].
+    """
+    try:
+        state = _service.classify_intent(req.messages, req.model)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
-        "created": created,
-        "model": _resp_get(result, "model", req.model or settings.default_model),
+        "created": int(time.time()),
+        "model": req.model or settings.default_model,
         "choices": [
             {
                 "index": 0,
                 "message": {
-                    "role": _msg_get(result_message, "role", "assistant"),
-                    "content": _msg_get(result_message, "content", ""),
+                    "role": "assistant",
+                    "content": _get_response(state),
                 },
-                "finish_reason": _resp_get(result, "done_reason", "stop"),
+                "finish_reason": "stop",
             }
         ],
+        "intent": {
+            "is_influx_relevant": state.get("is_influx_relevant"),
+            "is_schema_valid":    state.get("is_schema_valid"),
+            "task_type":          state.get("task_type"),
+            "confidence":         state.get("confidence"),
+            "reason":             state.get("reason"),
+            "error":              state.get("error"),
+        },
     }
