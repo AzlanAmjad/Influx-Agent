@@ -126,8 +126,8 @@ The agent will appear as a model automatically via the `/v1/models` endpoint.
 
 The core of Influx-Agent is a **deterministic LangGraph** that routes each user question through a series of specialised nodes. The graph compiles once at startup and is reused across all concurrent requests.
 
-<!-- TODO: LangGraph visual diagram -->
-<!-- ![LangGraph Diagram](docs/images/langgraph-diagram.png) -->
+<!-- LangGraph visual diagram -->
+![LangGraph Diagram](docs/images/langgraph-architecture.png)
 
 ```
 START → classify_intent → guardrails ─┬─→ unsupported_response → END

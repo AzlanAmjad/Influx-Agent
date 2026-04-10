@@ -1,0 +1,85 @@
+digraph LangGraphAgent {
+  graph [
+    label="Influx-Agent LangGraph Architecture (implemented)",
+    labelloc=t,
+    fontsize=22,
+    fontname="Helvetica",
+    rankdir=LR,
+    splines=true,
+    nodesep=0.45,
+    ranksep=0.7,
+    pad=0.25,
+    bgcolor="white"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#F8FAFF",
+    color="#5A6B8C",
+    fontname="Helvetica",
+    fontsize=11,
+    margin="0.11,0.08"
+  ];
+
+  edge [
+    color="#4F5D75",
+    fontname="Helvetica",
+    fontsize=10,
+    arrowsize=0.7
+  ];
+
+  start [label="START", shape=circle, width=0.5, fixedsize=true, fillcolor="#EAF4FF"];
+
+  classify [label="classify_intent\nLLM JSON classification\nsets: is_influx_relevant,\nis_schema_valid, task_type,\nconfidence, reason"];
+
+  guardrails [label="guardrails\ndeterministic gate\nchecks relevance +\ntask_type + confidence >= 0.55"];
+
+  unsupported [label="unsupported_response\nterminal fallback\nsets: response", fillcolor="#FFF1F0", color="#B76E79"];
+
+  select_db [label="select_database\nLLM picks primary DB\nsets: databases=[primary, historian?]"];
+
+  refine [label="refine_schema\nInflux SHOW* queries + cache\nsets: refined_schema", fillcolor="#F5FBF7", color="#5B8A72"];
+
+  resolve [label="resolve_time\nLLM extraction (never fails)\nsets: time_range={start,end}"];
+
+  select_meas [label="select_measurements\nLLM chooses db:measurement list\nsets: selected_measurements\nuses empty_measurements exclusion on retry"];
+
+  build [label="build_query\ndeterministic InfluxQL assembly\nsets: influxql_query\nannotates blocks with -- db:<name>", fillcolor="#F5FBF7", color="#5B8A72"];
+
+  execute [label="execute_query\nruns DataFrame queries\nprefixes columns + outer-joins\nsets: query_results OR retry state", fillcolor="#F5FBF7", color="#5B8A72"];
+
+  query_pipe [label="query_pipeline\nLLM summary + markdown table\nsets: response", fillcolor="#EEF9FF", color="#4D7EA8"];
+
+  anomaly_pipe [label="anomaly_pipeline\nWIP notice + markdown table\nsets: response", fillcolor="#EEF9FF", color="#4D7EA8"];
+
+  end [label="END", shape=doublecircle, width=0.58, fixedsize=true, fillcolor="#EAF4FF"];
+
+  start -> classify;
+  classify -> guardrails [label="IntentClassification JSON"];
+
+  guardrails -> unsupported [label="error or unsupported\nor confidence < 0.55", color="#B76E79", fontcolor="#B76E79"];
+  guardrails -> select_db [label="task_type in {query, anomaly}\n& no error"];
+
+  select_db -> refine [label="databases e.g. [meter, historian]"];
+
+  refine -> unsupported [label="primary DB fetch failure\nsets error", color="#B76E79", fontcolor="#B76E79"];
+  refine -> resolve [label="refined_schema ready"];
+
+  resolve -> select_meas [label="time_range\ne.g. now()-3h to now()"];
+
+  select_meas -> unsupported [label="parse/selection error", color="#B76E79", fontcolor="#B76E79"];
+  select_meas -> build [label="selected_measurements\ne.g. meter:demand"];
+
+  build -> unsupported [label="missing inputs", color="#B76E79", fontcolor="#B76E79"];
+  build -> execute [label="influxql_query blocks"];
+
+  execute -> select_meas [label="empty_measurements && retry_count < 1\nset retry_count += 1, clear downstream", color="#D18A00", fontcolor="#D18A00"];
+  execute -> query_pipe [label="task_type=query"];
+  execute -> anomaly_pipe [label="task_type=anomaly"];
+  execute -> unsupported [label="unexpected task_type", color="#B76E79", fontcolor="#B76E79"];
+
+  unsupported -> end;
+  query_pipe -> end;
+  anomaly_pipe -> end;
+}
