@@ -72,11 +72,13 @@ def resolve_time_node(state: AgentState) -> dict:
     """
     user_content = last_user_message(state["messages"])
 
+    system = _system_prompt()
+
     log.debug("resolve_time  user=%r", user_content[:120])
 
     llm = get_llm(state["model"])
     response = llm.invoke(
-        [SystemMessage(content=_system_prompt()), HumanMessage(content=user_content)]
+        [SystemMessage(content=system), HumanMessage(content=user_content)]
     )
 
     log.debug("resolve_time  raw_response=%r", str(response.content)[:200])

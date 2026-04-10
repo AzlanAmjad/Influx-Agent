@@ -68,12 +68,16 @@ def _measurement_descriptions(
 
 # ── prompt helpers ────────────────────────────────────────────────────────────
 
+_SAMPLE_ROWS = 20
+
+
 def _data_summary_for_prompt(query_results: dict) -> str:
     """Build a compact data summary for the LLM context window.
 
-    Includes row/column counts, time span, and a handful of sample rows
-    so the model can reference actual values without receiving the full
-    dataset.
+    Includes row/column counts, time span, and evenly-spaced sample
+    rows drawn from across the **entire** time range so the model sees
+    a representative downsampled view rather than just the first few
+    data points.
     """
     columns: list[str] = query_results.get("columns", [])
     index: list[str] = query_results.get("index", [])
@@ -82,25 +86,39 @@ def _data_summary_for_prompt(query_results: dict) -> str:
     if not data:
         return "No data was returned by the query."
 
+    total = len(data)
     parts: list[str] = [
-        f"Rows returned: {len(data)}",
+        f"Rows returned: {total}",
         f"Columns: {', '.join(columns)}",
     ]
 
     if index:
         parts.append(f"Time span: {index[0]} → {index[-1]}")
 
-    # A few sample rows so the LLM can cite real values.
-    sample_count = min(5, len(data))
+    # Evenly-spaced sample rows across the full dataset.
+    sample_count = min(_SAMPLE_ROWS, total)
+    if sample_count >= total:
+        sample_indices = list(range(total))
+    else:
+        # Linspace-style: always include first and last row.
+        step = (total - 1) / (sample_count - 1)
+        sample_indices = [round(i * step) for i in range(sample_count)]
+        # Deduplicate while preserving order (possible with very small datasets).
+        sample_indices = list(dict.fromkeys(sample_indices))
+
     sample_lines: list[str] = []
-    for i in range(sample_count):
+    for i in sample_indices:
         values = {
             col: data[i][j]
             for j, col in enumerate(columns)
             if data[i][j] is not None
         }
         sample_lines.append(f"  {index[i]}: {values}")
-    parts.append("Sample rows:\n" + "\n".join(sample_lines))
+
+    parts.append(
+        f"Sample rows ({len(sample_indices)} evenly spaced across dataset):\n"
+        + "\n".join(sample_lines)
+    )
 
     return "\n".join(parts)
 
@@ -169,7 +187,6 @@ def query_pipeline_node(state: AgentState) -> dict:
         selected,
         len(qr.get("data", [])),
     )
-
     try:
         llm = get_llm(state["model"], json_mode=False)
         response = llm.invoke(

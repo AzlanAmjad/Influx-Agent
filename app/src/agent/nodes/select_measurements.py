@@ -8,6 +8,7 @@ pairs so downstream nodes know which database each measurement lives in.
 """
 
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -17,49 +18,99 @@ from app.src.agent.state import AgentState
 log = logging.getLogger(__name__)
 
 
-# ── schema descriptions lookup ────────────────────────────────────────────────
+# ── schema pattern matching ───────────────────────────────────────────────────
 
-def _build_description_map(schema: list[dict]) -> dict[str, str]:
-    """
-    Build a ``database/measurement_pattern → description`` lookup from
-    the startup schema so we can annotate refined measurements with
-    human-readable context.
 
-    Patterns use ``{property}``-style placeholders, so we also store a
-    prefix key (everything before the first ``{``) for fuzzy matching.
+def _build_pattern_index(
+    schema: list[dict], db: str
+) -> list[tuple[re.Pattern, str, str]]:
     """
-    desc_map: dict[str, str] = {}
+    Build a list of ``(regex, pattern_name, description)`` for one
+    database from the startup schema.
+
+    Placeholder conversion rules:
+      - The **last** ``{placeholder}`` in a pattern becomes ``.+``
+        (matches one or more path segments, including ``/``).  This is
+        the "rest of path" wildcard — e.g. ``battery/{property}``
+        matches ``battery/soc`` **and** ``battery/1/ac/power``.
+      - All **earlier** ``{placeholder}``s become ``[^/]+`` (single
+        path segment).  E.g. the ``{id}`` in ``battery/{id}/{property}``
+        matches exactly one segment like ``1`` or ``2``.
+
+    This correctly routes ``inverter/1/ac/apparent_power`` (4 segments)
+    to ``inverter/{id}/{property}`` instead of leaving it uncategorised.
+
+    Sorted by specificity: more path segments first, then exact matches
+    before patterns at the same depth.
+    """
+    patterns: list[tuple[re.Pattern, str, str, int, bool]] = []
     for entry in schema:
-        db = entry.get("database", "")
-        name = entry.get("name", "")
-        description = entry.get("description", "")
-        if not description:
+        if entry.get("database") != db:
             continue
-        # Exact key
-        desc_map[f"{db}:{name}"] = description
-        # Prefix key for pattern expansion (e.g. "historian:battman/")
-        if "{" in name:
-            prefix = name[: name.index("{")]
-            desc_map[f"{db}:{prefix}"] = description
-    return desc_map
+        name = entry["name"]
+        desc = entry.get("description", "")
+        is_exact = "{" not in name
+        depth = len(name.split("/"))
+
+        if is_exact:
+            regex = re.compile(re.escape(name) + "$")
+        else:
+            segments = name.split("/")
+            # Find which segments are placeholders.
+            ph_indices = [
+                i for i, s in enumerate(segments)
+                if s.startswith("{") and s.endswith("}")
+            ]
+            last_ph = ph_indices[-1] if ph_indices else -1
+
+            regex_parts: list[str] = []
+            for i, seg in enumerate(segments):
+                if seg.startswith("{") and seg.endswith("}"):
+                    # Last placeholder → rest-of-path; others → single segment.
+                    regex_parts.append(".+" if i == last_ph else "[^/]+")
+                else:
+                    regex_parts.append(re.escape(seg))
+            regex = re.compile("/".join(regex_parts) + "$")
+
+        patterns.append((regex, name, desc, depth, is_exact))
+
+    # Most specific first: deepest path wins, then exact beats pattern.
+    patterns.sort(key=lambda p: (p[3], p[4]), reverse=True)
+
+    return [(regex, name, desc) for regex, name, desc, _, _ in patterns]
 
 
-def _match_description(
-    db: str, measurement: str, desc_map: dict[str, str]
-) -> str:
-    """Find the best description for a measurement, or return empty."""
-    # Try exact match first.
-    key = f"{db}:{measurement}"
-    if key in desc_map:
-        return desc_map[key]
-    # Try progressively shorter prefixes (handles pattern expansion).
-    parts = measurement.split("/")
-    for i in range(len(parts), 0, -1):
-        prefix = "/".join(parts[:i]) + "/"
-        prefix_key = f"{db}:{prefix}"
-        if prefix_key in desc_map:
-            return desc_map[prefix_key]
-    return ""
+def _match_pattern(
+    measurement: str,
+    patterns: list[tuple[re.Pattern, str, str]],
+) -> tuple[str, str] | None:
+    """Return ``(pattern_name, description)`` for the best matching pattern."""
+    for regex, pattern_name, desc in patterns:
+        if regex.fullmatch(measurement):
+            return (pattern_name, desc)
+    return None
+
+
+# Matches a path segment that is a bare integer > 1 (device IDs like /2/, /3/, /15/).
+_HIGHER_DEVICE_RE = re.compile(r"(?:^|/)([2-9]|\d{2,})(?:/|$)")
+
+
+def _filter_device_representatives(
+    items: list[tuple[str, dict]],
+) -> list[tuple[str, dict]]:
+    """
+    Keep only device-1 (or non-numeric) measurements for prompt display.
+
+    For per-device patterns like ``battery/{id}/{property}``, the live
+    schema contains entries for every device (``battery/1/soc``,
+    ``battery/2/soc``, ``battery/3/soc``, …).  Showing all of them
+    wastes prompt tokens — the LLM only needs to see the device-1
+    examples to understand the naming convention.
+
+    Measurements with no numeric device segment (e.g. ``battman/strategy``)
+    pass through unchanged.
+    """
+    return [(name, meta) for name, meta in items if not _HIGHER_DEVICE_RE.search(name)]
 
 
 def _schema_listing(
@@ -68,34 +119,85 @@ def _schema_listing(
     schema: list[dict],
 ) -> str:
     """
-    Render the multi-database refined schema as a compact listing.
+    Render the multi-database refined schema as a **grouped** listing.
 
-    Each measurement is annotated with:
-    - ★ marker if it belongs to the primary database
-    - A short description (from the startup schema) so the LLM
-      understands what data each measurement actually contains
-    - Field names (first few) for additional context
+    Measurements are categorised by their schema pattern from
+    ``influx_schema.json``.  Each group shows:
+      - A header with the pattern name, description, and total count.
+      - Representative measurements (device-1 only for per-device
+        patterns) with field names.
+
+    For patterns containing a numeric device ID (e.g. ``battery/2/soc``,
+    ``meter/3/demand``), only device-1 examples are shown in the prompt.
+    The group header still shows the total count and the prompt rules
+    tell the LLM it can construct names for other device IDs.
     """
-    desc_map = _build_description_map(schema)
+    sections: list[str] = []
 
-    lines: list[str] = []
     for db in sorted(refined_schema, key=lambda d: (d != primary_db, d)):
         measurements = refined_schema[db]
-        for name, meta in measurements.items():
-            fields_raw = meta.get("fields", [])
-            field_names = [f["field"] for f in fields_raw[:8]]
-            field_str = ", ".join(field_names) if field_names else "*"
-            if len(fields_raw) > 8:
-                field_str += f" (+{len(fields_raw) - 8})"
+        patterns = _build_pattern_index(schema, db)
+        marker = "★" if db == primary_db else " "
 
-            desc = _match_description(db, name, desc_map)
-            desc_part = f"  -- {desc}" if desc else ""
+        # Group measurements by pattern.
+        groups: dict[str, dict] = {}  # pattern_name → {desc, items}
+        ungrouped: list[tuple[str, dict]] = []
 
-            marker = "★" if db == primary_db else " "
-            lines.append(
-                f"  {marker} {db}:{name}  fields=[{field_str}]{desc_part}"
+        for name in sorted(measurements):
+            meta = measurements[name]
+            match = _match_pattern(name, patterns)
+            if match:
+                pat_name, desc = match
+                if pat_name not in groups:
+                    groups[pat_name] = {"description": desc, "items": []}
+                groups[pat_name]["items"].append((name, meta))
+            else:
+                ungrouped.append((name, meta))
+
+        # Render each group.
+        for pat_name, group in groups.items():
+            desc = group["description"]
+            items = group["items"]
+            total = len(items)
+
+            # Filter to device-1 representatives for per-device patterns.
+            shown = _filter_device_representatives(items)
+            hidden = total - len(shown)
+
+            count_label = f"{total} measurement{'s' if total != 1 else ''}"
+            sections.append(
+                f"── {marker} {db}:{pat_name} ({count_label})  -- {desc}"
             )
-    return "\n".join(lines)
+
+            for name, meta in shown:
+                fields_raw = meta.get("fields", [])
+                field_names = [f["field"] for f in fields_raw[:8]]
+                field_str = ", ".join(field_names) if field_names else "*"
+                if len(fields_raw) > 8:
+                    field_str += f" (+{len(fields_raw) - 8})"
+                sections.append(f"       {db}:{name}  fields=[{field_str}]")
+
+            if hidden > 0:
+                sections.append(
+                    f"       (devices 2+ follow the same pattern — {hidden} omitted)"
+                )
+
+        # Render ungrouped measurements (if any).
+        if ungrouped:
+            shown_ug = _filter_device_representatives(ungrouped)
+            hidden_ug = len(ungrouped) - len(shown_ug)
+            sections.append(f"── {marker} {db}:(uncategorised) ({len(ungrouped)} measurements)")
+            for name, meta in shown_ug:
+                fields_raw = meta.get("fields", [])
+                field_names = [f["field"] for f in fields_raw[:8]]
+                field_str = ", ".join(field_names) if field_names else "*"
+                sections.append(f"       {db}:{name}  fields=[{field_str}]")
+            if hidden_ug > 0:
+                sections.append(
+                    f"       (devices 2+ follow the same pattern — {hidden_ug} omitted)"
+                )
+
+    return "\n".join(sections)
 
 
 def _system_prompt(
@@ -117,23 +219,27 @@ You are a measurement selector for an InfluxDB time-series database.
 
 TASK: Pick the measurements that contain the data the user is asking about.
 
-Each measurement below is listed as:
-  database:measurement_name  fields=[...]  -- description
+Measurements below are grouped by category.  Each group header shows:
+  ── database:pattern_name (count)  -- description
 
-Read the descriptions carefully — they tell you what data each measurement stores.
+Under each header are example measurements with their fields.
 
 === AVAILABLE MEASUREMENTS ===
 {listing}
 === END ==={exclusion_block}
 
 RULES (follow strictly):
-1. Match the user's intent to the measurement DESCRIPTION, not just the name.
-2. Only pick measurements whose description clearly relates to the user's question.
-3. Prefer ★ (primary database) measurements when relevant.
-4. Return the FEWEST measurements needed. Usually 1–3 is enough.
-5. Always use the "database:measurement" format exactly as shown above.
-6. If unsure between two measurements, pick the one whose description is a closer semantic match.
-7. If no measurement is a perfect match, pick the CLOSEST available measurement — always return at least one.
+1. Read the group DESCRIPTIONS carefully — they tell you what data each category contains.
+2. First identify the correct group, then pick specific measurements from that group.
+3. Only pick measurements whose group description clearly relates to the user's question.
+4. Prefer ★ (primary database) groups when relevant.
+5. Return the FEWEST measurements needed. Usually 1–3 is enough.
+6. Always use the "database:measurement_name" format exactly as shown.
+7. If a group header shows a pattern like battery/{{id}}/{{property}}, you MAY construct
+   a measurement name matching that pattern even if the specific name isn't listed
+   in the examples. For example, if the user asks about battery 5 SOC, use
+   "historian:battery/5/soc" even if only "battery/1/soc" is shown.
+8. If no measurement is a perfect match, pick the CLOSEST available — always return at least one.
 
 Return ONLY this JSON — nothing else:
 {{"measurements": ["database:measurement_name"]}}
