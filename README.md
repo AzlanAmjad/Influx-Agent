@@ -14,7 +14,7 @@ Influx-Agent is a FastAPI service that accepts natural-language questions about 
 ```
 ┌──────────────┐       ┌──────────────────────────┐       ┌───────────────────┐
 │              │       │                          │       │                   │
-│  Open WebUI  │──────▶│  Influx-Agent (FastAPI)  │──────▶│  Ollama Server    │
+│  Open WebUI  │─────▶│  Influx-Agent (FastAPI)  │──────▶│  Ollama Server    │
 │  or any      │  HTTP │                          │  HTTP │  (remote/local)   │
 │  OpenAI      │       │  LangGraph Agent         │       │  qwen2.5:14b      │
 │  client      │       │                          │       │                   │
@@ -29,7 +29,7 @@ Influx-Agent is a FastAPI service that accepts natural-language questions about 
                             └───────────────┘
 ```
 
-<!-- TODO: high-level block diagram image -->
+<!-- high-level block diagram image -->
 ![Architecture Diagram](docs/images/architecture.png)
 
 - **FastAPI** serves the OpenAI-compatible HTTP endpoints.
@@ -66,10 +66,15 @@ Follow the official installation guide for your platform: [https://ollama.com/do
 
 1. Download and run the installer from the link above.
 2. Pull the default model:
-   ```bash
+   ```powershell
    ollama pull qwen2.5:14b
    ```
 3. The Ollama server starts automatically and listens on `http://localhost:11434`.
+4. If you want to run the Ollama server so it's accessible via your LAN network run the following:
+   ```powershell
+   $env:OLLAMA_HOST="0.0.0.0:11434"
+   ollama serve
+   ```
 
 > If running Ollama on a **separate machine** on your LAN, note its IP address — you'll configure it in the `.env` file below.
 
