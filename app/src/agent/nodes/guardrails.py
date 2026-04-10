@@ -10,14 +10,24 @@ Sets ``error`` on any failure; the graph's conditional edge routes to
 ``unsupported_response`` when error is non-None.
 """
 
-from app.src.agent.state import IntentState
+import logging
+
+from app.src.agent.state import AgentState
+
+log = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD: float = 0.55
 _ROUTABLE_TASK_TYPES: frozenset[str] = frozenset({"query", "anomaly"})
 
 
-def guardrails_node(state: IntentState) -> dict:
+def guardrails_node(state: AgentState) -> dict:
     """Single hard-gate node: relevance → task type → confidence."""
+    log.debug(
+        "guardrails  relevant=%s  task_type=%s  confidence=%s",
+        state.get("is_influx_relevant"),
+        state.get("task_type"),
+        state.get("confidence"),
+    )
     if not state.get("is_influx_relevant"):
         return {
             "task_type": "unsupported",

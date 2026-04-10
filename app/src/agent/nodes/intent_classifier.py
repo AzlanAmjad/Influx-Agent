@@ -1,40 +1,19 @@
 """
 intent_classifier node – single LLM call with structured JSON output.
 
-Uses ChatOllama (format="json", temperature=0) to classify the user query
-into the IntentClassification contract.  The filtered schema snippet is
-injected into the system prompt – never the full schema.
+Classifies the user query into (is_influx_relevant, is_schema_valid,
+task_type, confidence, reason) using a compact prompt with the schema
+injected as ``database:name`` lines.
 """
 
-import json
-import re
+import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
 
-from app.src.agent.state import IntentClassification, IntentState
-from app.src.core.config import settings
+from app.src.agent.llm import extract_json, get_llm, last_user_message
+from app.src.agent.state import IntentClassification, AgentState
 
-
-def _extract_json_payload(content: str | dict) -> dict:
-    """Best-effort JSON extraction from Ollama response content."""
-    if isinstance(content, dict):
-        return content
-
-    if not isinstance(content, str):
-        raise ValueError("Classifier response content is not a string/dict")
-
-    text = content.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Fallback: extract first JSON object if model prepends/appends text.
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("No JSON object found in classifier response")
-    return json.loads(match.group(0))
+log = logging.getLogger(__name__)
 
 
 def _normalize_classification(
@@ -104,7 +83,7 @@ Rules:
 
 # ── node ──────────────────────────────────────────────────────────────────────
 
-def classify_intent_node(state: IntentState) -> dict:
+def classify_intent_node(state: AgentState) -> dict:
     """
     Call the LLM once with a tight structured-output prompt and parse the
     JSON response into IntentClassification fields.
@@ -112,32 +91,24 @@ def classify_intent_node(state: IntentState) -> dict:
     On any parse failure the node gracefully degrades to 'unsupported' so
     downstream guardrails always receive a fully-populated state.
     """
-    messages: list[dict] = state["messages"]
-    model: str = state["model"]
-
-    user_content: str = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "user"),
-        "",
-    )
-
+    user_content = last_user_message(state["messages"])
     snippet = _schema_snippet(state["schema"])
     system = _system_prompt(snippet)
 
-    llm = ChatOllama(
-        base_url=settings.ollama_host,
-        model=model,
-        format="json",   # Ollama native JSON-mode – enforces valid JSON output
-        temperature=0,   # fully deterministic classification
-    )
+    log.debug("classify_intent  user=%r", user_content[:120])
 
+    llm = get_llm(state["model"])
     response = llm.invoke(
         [SystemMessage(content=system), HumanMessage(content=user_content)]
     )
 
+    log.debug("classify_intent  raw_response=%r", str(response.content)[:200])
+
     try:
-        parsed = _extract_json_payload(response.content)
+        parsed = extract_json(response.content)
         clf = _normalize_classification(parsed)
     except Exception as exc:  # noqa: BLE001
+        log.warning("classify_intent  parse_error=%s", exc)
         return {
             "is_influx_relevant": False,
             "is_schema_valid": False,
@@ -147,6 +118,12 @@ def classify_intent_node(state: IntentState) -> dict:
             "error": f"Intent classifier parse error: {exc}",
         }
 
+    log.debug(
+        "classify_intent  task_type=%s  confidence=%s  relevant=%s",
+        clf.task_type,
+        clf.confidence,
+        clf.is_influx_relevant,
+    )
     return {
         "is_influx_relevant": clf.is_influx_relevant,
         "is_schema_valid": clf.is_schema_valid,

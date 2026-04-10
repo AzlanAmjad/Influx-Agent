@@ -9,7 +9,11 @@ Sets ``state["response"]`` to a clear, user-facing explanation so the route
 layer has nothing to assemble – it just reads the finished message.
 """
 
-from app.src.agent.state import IntentState
+import logging
+
+from app.src.agent.state import AgentState
+
+log = logging.getLogger(__name__)
 
 # Friendly preamble shown before the classifier's reason.
 _PREAMBLE = (
@@ -19,7 +23,7 @@ _PREAMBLE = (
 )
 
 
-def unsupported_response_node(state: IntentState) -> dict:
+def unsupported_response_node(state: AgentState) -> dict:
     """
     Build a user-facing explanation from whatever the guardrails recorded.
 
@@ -34,4 +38,5 @@ def unsupported_response_node(state: IntentState) -> dict:
         or "The request could not be classified or is outside this agent's scope."
     )
 
+    log.debug("unsupported_response  detail=%r", detail[:120])
     return {"response": f"{_PREAMBLE}{detail}"}

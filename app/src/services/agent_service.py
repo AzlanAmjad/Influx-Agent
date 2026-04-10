@@ -1,7 +1,11 @@
-from app.src.agent.graphs.intent_graph import build_agent_graph
+import logging
+
+from app.src.agent.graphs.agent_graph import build_agent_graph
 from app.src.agent.schema_loader import load_schema
-from app.src.agent.state import IntentState
+from app.src.agent.state import AgentState
 from app.src.schemas.chat import Message
+
+log = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -11,18 +15,23 @@ class AgentService:
         # Load schema and compile the agent graph once at startup.
         self._schema = load_schema()
         self._graph = build_agent_graph()
+        log.info(
+            "AgentService ready  model=%s  schema_measurements=%d",
+            default_model,
+            len(self._schema),
+        )
 
-    # ── intent classification ────────────────────────────────────────────────
+    # ── graph execution ────────────────────────────────────────────────────────────
 
-    def classify_intent(self, messages: list[Message], model: str | None = None) -> IntentState:
+    def run(self, messages: list[Message], model: str | None = None) -> AgentState:
         """
-        Run the intent-classification subgraph and return the final state.
+        Execute the full agent graph and return the final state.
 
-        The returned dict always contains:
-          is_influx_relevant, is_schema_valid, task_type,
-          confidence, reason, filtered_schema, error
+        The graph classifies intent, selects a database, refines the
+        live schema, plans an InfluxQL query, and routes to the
+        appropriate pipeline (query / anomaly / unsupported).
         """
-        initial_state: IntentState = {
+        initial_state: AgentState = {
             "messages":           [m.model_dump() for m in messages],
             "schema":             self._schema,
             "model":              model or self.default_model,
@@ -32,6 +41,14 @@ class AgentService:
             "confidence":         None,
             "reason":             None,
             "error":              None,
+            "databases":             None,
+            "refined_schema":        None,
+            "selected_measurements": None,
+            "time_range":            None,
+            "influxql_query":        None,
+            "query_results":         None,
+            "retry_count":           0,
             "response":           None,
         }
+        log.debug("Invoking agent graph  model=%s", initial_state["model"])
         return self._graph.invoke(initial_state)

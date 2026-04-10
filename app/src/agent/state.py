@@ -36,15 +36,21 @@ class IntentClassification(BaseModel):
     )
 
 
-class IntentState(TypedDict):
+class AgentState(TypedDict):
     """
-    Shared state contract for the intent-classification subgraph.
+    Shared state contract for the agent graph.
 
     Populated incrementally as each node executes:
-      classify_intent  → is_influx_relevant, is_schema_valid, task_type,
-                         confidence, reason
-      guardrails       → error  (set on hard-constraint violation)
-      terminal nodes   → response  (user-facing reply)
+      classify_intent      → is_influx_relevant, is_schema_valid, task_type,
+                             confidence, reason
+      guardrails           → error  (set on hard-constraint violation)
+      select_database      → databases  (primary + historian if applicable)
+      refine_schema        → refined_schema  (all selected databases)
+      resolve_time         → time_range
+      select_measurements  → selected_measurements
+      build_query          → influxql_query
+      execute_query        → query_results | retry
+      terminal nodes       → response  (user-facing reply)
     """
 
     # ── inputs ────────────────────────────────────────────────────────────────
@@ -62,5 +68,23 @@ class IntentState(TypedDict):
     # ── routing / error propagation ──────────────────────────────────────────
     error: str | None          # non-None signals early termination
 
+    # ── derived by select_database node ──────────────────────────────────────
+    databases: list[str] | None  # InfluxDB databases targeted for this request
+
+    # ── derived by refine_schema node ────────────────────────────────────────
+    refined_schema: dict | None  # {db_name: {measurement: {tags, fields}}}
+
+    # ── derived by resolve_time node ─────────────────────────────────────────
+    time_range: dict | None    # {"start": <str>, "end": <str>}
+
+    # ── derived by select_measurements node ──────────────────────────────────
+    selected_measurements: list[str] | None  # ["db:measurement", …]
+
+    # ── derived by build_query node ──────────────────────────────────────────
+    influxql_query: str | None # deterministically assembled InfluxQL
+
+    # ── derived by execute_query node ──────────────────────────────────────
+    query_results: dict | None # {"columns": [...], "index": [...], "data": [...]}
+    retry_count: int           # number of select_measurements retries (max 1)
     # ── terminal output ──────────────────────────────────────────────────────
     response: str | None       # final user-facing message set by terminal nodes
