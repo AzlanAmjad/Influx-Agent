@@ -1,3 +1,12 @@
+"""
+Chat route – OpenAI-compatible ``POST /api/chat`` endpoint.
+
+Delegates to :class:`AgentService` which runs the full LangGraph agent
+and returns the terminal state.  The response is shaped into an
+OpenAI ChatCompletion object with additional ``intent`` and ``plan``
+metadata.
+"""
+
 import logging
 import time
 import uuid

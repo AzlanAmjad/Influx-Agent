@@ -85,6 +85,7 @@ class AgentState(TypedDict):
 
     # ── derived by execute_query node ──────────────────────────────────────
     query_results: dict | None # {"columns": [...], "index": [...], "data": [...]}
+    empty_measurements: list[str] | None  # measurements that returned no data (fed back on retry)
     retry_count: int           # number of select_measurements retries (max 1)
     # ── terminal output ──────────────────────────────────────────────────────
     response: str | None       # final user-facing message set by terminal nodes

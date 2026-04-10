@@ -42,9 +42,9 @@ Graph topology
          │
          ├─ any empty & retry<1 → select_measurements (retry loop, max 1)
          │
-         ├─ task_type=query   → query_pipeline   (stub)
+         ├─ task_type=query   → query_pipeline   (LLM summary + Markdown table)
          │
-         └─ task_type=anomaly → anomaly_pipeline (stub)
+         └─ task_type=anomaly → anomaly_pipeline (Markdown table + WIP notice)
 
 All nodes are idempotent except for the single retry loop between
 execute_query → select_measurements → build_query → execute_query.
@@ -58,6 +58,8 @@ from app.src.agent.nodes.build_query import build_query_node
 from app.src.agent.nodes.execute_query import execute_query_node
 from app.src.agent.nodes.guardrails import guardrails_node
 from app.src.agent.nodes.intent_classifier import classify_intent_node
+from app.src.agent.nodes.anomaly_pipeline import anomaly_pipeline_node
+from app.src.agent.nodes.query_pipeline import query_pipeline_node
 from app.src.agent.nodes.refine_schema import refine_schema_node
 from app.src.agent.nodes.resolve_time import resolve_time_node
 from app.src.agent.nodes.select_database import select_database_node
@@ -100,8 +102,8 @@ def _route_after_build_query(state: AgentState) -> str:
 def _route_after_execute_query(state: AgentState) -> str:
     """Route to the correct pipeline, or retry on empty results."""
     # When any queries returned empty and retries remain, execute_query
-    # clears query_results and selected_measurements → loop back.
-    if state.get("query_results") is None and state.get("selected_measurements") is None:
+    # sets empty_measurements and clears query_results → loop back.
+    if state.get("empty_measurements") and state.get("query_results") is None:
         return "select_measurements"
 
     task_type = state.get("task_type")
@@ -110,28 +112,6 @@ def _route_after_execute_query(state: AgentState) -> str:
     if task_type == "anomaly":
         return "anomaly_pipeline"
     return "unsupported_response"
-
-
-# ── pipeline stubs (replaced by real subgraphs in later phases) ───────────────
-
-def _query_pipeline_stub(state: AgentState) -> dict:
-    """Placeholder – query-generation pipeline entry point."""
-    dbs = state.get("databases") or ["?"]
-    query = state.get("influxql_query", "(none)")
-    qr = state.get("query_results") or {}
-    rows = len(qr.get("index", []))
-    cols = len(qr.get("columns", []))
-    return {"response": f"[query pipeline – dbs={dbs}  rows={rows}  cols={cols}]\n\nPlanned InfluxQL:\n{query}"}
-
-
-def _anomaly_pipeline_stub(state: AgentState) -> dict:
-    """Placeholder – anomaly-detection pipeline entry point."""
-    dbs = state.get("databases") or ["?"]
-    query = state.get("influxql_query", "(none)")
-    qr = state.get("query_results") or {}
-    rows = len(qr.get("index", []))
-    cols = len(qr.get("columns", []))
-    return {"response": f"[anomaly pipeline – dbs={dbs}  rows={rows}  cols={cols}]\n\nPlanned InfluxQL:\n{query}"}
 
 
 # ── graph factory ─────────────────────────────────────────────────────────────
@@ -155,8 +135,8 @@ def build_agent_graph():
     graph.add_node("build_query",          build_query_node)
     graph.add_node("execute_query",        execute_query_node)
     graph.add_node("unsupported_response", unsupported_response_node)
-    graph.add_node("query_pipeline",       _query_pipeline_stub)
-    graph.add_node("anomaly_pipeline",     _anomaly_pipeline_stub)
+    graph.add_node("query_pipeline",       query_pipeline_node)
+    graph.add_node("anomaly_pipeline",     anomaly_pipeline_node)
 
     # classify → guardrails
     graph.set_entry_point("classify_intent")

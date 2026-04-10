@@ -43,6 +43,7 @@ def _normalize_classification(
     }
     return IntentClassification.model_validate(normalized)
 
+
 # ── prompt helpers ────────────────────────────────────────────────────────────
 
 def _schema_snippet(filtered_schema: list[dict]) -> str:
@@ -68,14 +69,14 @@ Return ONLY JSON with exact keys:
 {{
     "is_influx_relevant": true|false,
     "is_schema_valid": true|false,
-  "task_type": "query" | "anomaly" | "unsupported",
+    "task_type": "query" | "anomaly" | "unsupported",
     "confidence": 0.0-1.0,
     "reason": "short reason"
 }}
 
 Rules:
 - query = retrieval, reporting, understanding.
-- anomaly = fault/anomaly detection.
+- anomaly = fault/anomaly detection, issues, problems, unexpected behaviour.
 - unsupported = not solvable with this schema.
 - Keep reason under 20 words.
 """
@@ -124,11 +125,4 @@ def classify_intent_node(state: AgentState) -> dict:
         clf.confidence,
         clf.is_influx_relevant,
     )
-    return {
-        "is_influx_relevant": clf.is_influx_relevant,
-        "is_schema_valid": clf.is_schema_valid,
-        "task_type": clf.task_type,
-        "confidence": clf.confidence,
-        "reason": clf.reason,
-        "error": None,
-    }
+    return {"error": None, **clf.model_dump()}

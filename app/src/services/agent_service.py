@@ -47,6 +47,7 @@ class AgentService:
             "time_range":            None,
             "influxql_query":        None,
             "query_results":         None,
+            "empty_measurements":    None,
             "retry_count":           0,
             "response":           None,
         }

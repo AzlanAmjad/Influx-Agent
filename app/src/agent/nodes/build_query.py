@@ -60,6 +60,8 @@ def build_query_node(state: AgentState) -> dict:
     # Group measurements by database.
     by_db: dict[str, list[str]] = defaultdict(list)
     for entry in raw_measurements:
+        if not entry or not entry.strip():
+            continue
         db, name = _parse_db_measurement(entry, fallback_db)
         by_db[db].append(name)
 

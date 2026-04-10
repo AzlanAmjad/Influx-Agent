@@ -37,9 +37,10 @@ def get_cached_schema_for_database(database: str):
     """Return the refined schema for a single database, or 404."""
     with _cache_lock:
         entry = _cache.get(database)
+        all_databases = list(_cache.keys())
 
     if entry is None:
-        return {"error": f"No cached schema for database '{database}'.", "databases": list(_cache.keys())}
+        return {"error": f"No cached schema for database '{database}'.", "databases": all_databases}
 
     measurements = entry.get("measurements", entry)
     return {

@@ -19,6 +19,8 @@ from app.src.db.client import query_dataframe
 
 log = logging.getLogger(__name__)
 
+_MAX_RETRIES = 1
+
 # Matches the annotation emitted by build_query:  -- db:<name>
 _DB_ANNOTATION_RE = re.compile(r"^--\s*db:\s*(.+)$")
 
@@ -131,17 +133,20 @@ def execute_query_node(state: AgentState) -> dict:
 
     # ── retry logic: if ANY measurements came back empty, re-run
     #    select_measurements from scratch (max 1 retry). ─────────────────
-    _MAX_RETRIES = 1
-
     if empty_labels and retry_count < _MAX_RETRIES:
+        # Accumulate across retries so the exclusion list grows.
+        prev_empty: list[str] = state.get("empty_measurements") or []
+        all_empty = list(dict.fromkeys(prev_empty + empty_labels))
+
         log.warning(
             "execute_query  empty measurements detected (retry %d/%d)  "
             "empty=%s  – requesting retry",
             retry_count + 1,
             _MAX_RETRIES,
-            empty_labels,
+            all_empty,
         )
         return {
+            "empty_measurements": all_empty,
             "retry_count": retry_count + 1,
             # Clear stale downstream state so the retry path rebuilds.
             "selected_measurements": None,

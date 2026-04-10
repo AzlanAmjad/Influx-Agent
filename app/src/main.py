@@ -19,6 +19,7 @@ app.include_router(schema_router, prefix="/api")
 def health():
     return {"status": "ok"}
 
+
 if __name__ == "__main__":
     log.info(
         "Starting uvicorn  model=%s  ollama=%s  influxdb=%s:%s",

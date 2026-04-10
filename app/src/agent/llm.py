@@ -13,14 +13,21 @@ from langchain_ollama import ChatOllama
 from app.src.core.config import settings
 
 
-def get_llm(model: str) -> ChatOllama:
-    """Return a deterministic, JSON-mode ChatOllama instance."""
-    return ChatOllama(
-        base_url=settings.ollama_host,
-        model=model,
-        format="json",
-        temperature=0,
-    )
+def get_llm(model: str, *, json_mode: bool = True) -> ChatOllama:
+    """Return a deterministic ChatOllama instance.
+
+    When *json_mode* is ``True`` (default) the model is instructed to
+    return JSON, which is appropriate for structured-output nodes.  Set
+    to ``False`` for free-form text generation (e.g. summarisation).
+    """
+    kwargs: dict = {
+        "base_url": settings.ollama_host,
+        "model": model,
+        "temperature": 0,
+    }
+    if json_mode:
+        kwargs["format"] = "json"
+    return ChatOllama(**kwargs)
 
 
 def _find_balanced_braces(text: str) -> str | None:

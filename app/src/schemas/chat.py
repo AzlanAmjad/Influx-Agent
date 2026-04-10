@@ -1,5 +1,6 @@
+from typing import Literal
+
 from pydantic import BaseModel
-from typing import List, Literal
 
 
 class Message(BaseModel):
@@ -9,5 +10,5 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     model: str | None = None
-    messages: List[Message]
+    messages: list[Message]
     stream: bool = False
